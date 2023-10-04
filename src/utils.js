@@ -10,7 +10,7 @@ const numericRange = (from, count) => {
  * @param {Date} date
  */
 const formatDate = date => {
-  return `${date.getUTCFullYear()}-${date.getUTCMonth().toString().padStart(2, 0)}-${date
+  return `${date.getUTCFullYear()}-${(date.getUTCMonth() + 1).toString().padStart(2, 0)}-${date
     .getUTCDate()
     .toString()
     .padStart(2, 0)}`

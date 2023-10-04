@@ -20,7 +20,7 @@ SQL
     psql "postgresql://$DB_USER:$DB_PASSWORD@localhost/$DB_NAME?sslmode=require" < "$_ROOT/db/test.sql"
     ;;
   *)
-    echo "Invalid cmd: $cmd. Must be one of: ${BOLD}install${SGR0}" >&2
+    echo "Invalid cmd" >&2
     exit 1
     ;;
 esac

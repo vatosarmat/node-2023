@@ -1,5 +1,7 @@
 const dedent = require('dedent')
 const { Client } = require('pg')
+
+const { AppError } = require('./error')
 const {
   hasValue,
   numericRange,
@@ -40,11 +42,11 @@ class AddQueryBuilder extends LessonsQueryBuilder {
     if (hasValue(body, 'teacherIds')) {
       const { teacherIds } = body
       if (!Array.isArray(teacherIds)) {
-        throw new Error('"teacherIds" must be array')
+        throw new AppError(400, '"teacherIds" must be array')
       }
 
       if (teacherIds.length > 0 && teacherIds.some(item => !isInteger(item, 1))) {
-        throw new Error('"teacherIds" must be positive integers array')
+        throw new AppError(400, '"teacherIds" must be positive integers array')
       }
 
       this.refined.teacherIds = uniqueSort(teacherIds)
@@ -62,24 +64,26 @@ class AddQueryBuilder extends LessonsQueryBuilder {
         body.days.every(item => isInteger(item, 0, 6))
       )
     ) {
-      throw new Error('"days" missing or invalid')
+      throw new AppError(400, '"days" missing or invalid')
     }
 
     const firstDate = new Date(body.firstDate)
     if (!(hasValue(body, 'firstDate') && !isNaN(firstDate))) {
-      throw new Error('"firstDate" missing or invalid')
+      throw new AppError(400, '"firstDate" missing or invalid')
     }
+
+    this.refined.firstDate = body.firstDate
 
     const days = uniqueSort(body.days)
     const firstDow = firstDate.getUTCDay()
 
     const dayShifts = Array(days.length)
-    let actualFirstDate = null
+    let adjustedFirstDate = null
     for (let i = 0; i < days.length; i++) {
-      if (!actualFirstDate) {
+      if (!adjustedFirstDate) {
         if (firstDow <= days[i]) {
           firstDate.setUTCDate(firstDate.getUTCDate() + days[i] - firstDow)
-          actualFirstDate = formatDate(firstDate)
+          adjustedFirstDate = formatDate(firstDate)
         }
       }
 
@@ -89,34 +93,39 @@ class AddQueryBuilder extends LessonsQueryBuilder {
       }
     }
 
-    this.refined.firstDate = actualFirstDate
+    if (!adjustedFirstDate) {
+      firstDate.setUTCDate(firstDate.getUTCDate() + 7 - (firstDow - days[0]))
+      adjustedFirstDate = formatDate(firstDate)
+    }
+
+    this.refined.adjustedFirstDate = adjustedFirstDate
     this.refined.dayShifts = dayShifts
-    this.refines.dowsCount = dayShifts.length
+    this.refined.dowsCount = dayShifts.length
   }
 
   refineLessonsCountAndLastDate(body) {
     if (hasValue(body, 'lessonsCount') && hasValue(body, 'lastDate')) {
-      throw new Error(`"lessonsCount" and "lastDate" are mutually exclusive`)
+      throw new AppError(400, `"lessonsCount" and "lastDate" are mutually exclusive`)
     }
 
     if (hasValue(body, 'lessonsCount')) {
       const { lessonsCount } = body
       if (!isInteger(lessonsCount, 1)) {
-        throw new Error(`"lessonsCount" has invalid value`)
+        throw new AppError(400, `"lessonsCount" has invalid value`)
       }
-      this.refines.lessonsCount = lessonsCount
+      this.refined.lessonsCount = lessonsCount
     } else {
-      this.refined.lessonsCount = 300
+      this.refined.lessonsCount = parseInt(process.env.MAX_LESSONS ?? 300)
     }
 
     if (hasValue(body, 'lastDate')) {
       const lastDate = new Date(body.lastDate)
       if (isNaN(lastDate)) {
-        throw new Error(`"lastDate" has invalid value`)
+        throw new AppError(400, `"lastDate" has invalid value`)
       }
 
-      if (lastDate.valueOf() <= new Date(this.refined.actualFirstDate).valueOf()) {
-        throw new Error(`"lastDate" must be after "firstDate"(with considering "days")`)
+      if (lastDate.valueOf() <= new Date(this.refined.adjustedFirstDate).valueOf()) {
+        throw new AppError(400, `"lastDate" must be after "firstDate"(adjusted by "days")`)
       }
 
       this.refined.lastDate = formatDate(lastDate)
@@ -131,8 +140,9 @@ class AddQueryBuilder extends LessonsQueryBuilder {
    * @param {Record<string, string|number|(string|number)[]>} body
    */
   constructor(body) {
+    super()
     if (!body) {
-      throw new Error('Body expected')
+      throw new AppError(400, 'Body expected')
     }
 
     if (hasValue(body, 'title')) {
@@ -146,8 +156,8 @@ class AddQueryBuilder extends LessonsQueryBuilder {
     this.refineLessonsCountAndLastDate(body)
   }
 
-  get firstDate() {
-    return this.scalar('firstDate')
+  get adjustedFirstDate() {
+    return this.scalar('adjustedFirstDate')
   }
 
   get title() {
@@ -166,8 +176,12 @@ class AddQueryBuilder extends LessonsQueryBuilder {
     return this.scalar('lessonsCount')
   }
 
+  get lastDate() {
+    return this.scalar('lastDate')
+  }
+
   get teacherIds() {
-    return this.vector('teacherIds', ',', t => `(${t})`)
+    return this.vector('teacherIds', ',', t => `(${t}::int)`)
   }
 
   lastTable = 'lessons_inserted'
@@ -182,7 +196,7 @@ class AddQueryBuilder extends LessonsQueryBuilder {
           INTO lesson_teachers (lesson_id, teacher_id)
         (
         SELECT
-          L.id as lesson_id, T.id as teacher_id
+          L.lesson_id, T.id as teacher_id
         FROM
           lessons_inserted L
           CROSS JOIN (VALUES ${this.teacherIds}) T(id)
@@ -199,16 +213,16 @@ class AddQueryBuilder extends LessonsQueryBuilder {
     return dedent`
       WITH
       RECURSIVE lessons_input(n, date, title) AS (
-        VALUES (0, ${this.firstDate}::date, ${this.title})
+        VALUES (0, ${this.adjustedFirstDate}::date, ${this.title})
         UNION ALL
         SELECT
           n + 1,
-          date + (array[${this.dayShifts}])[(n % ${this.dowsCount})+1],
+          date + (array[${this.dayShifts}]::integer[])[(n % ${this.dowsCount})+1],
           title
         FROM
           lessons_input
         WHERE
-          date + (array[${this.placeholders[dayShifts]}])[(n % ${this.placeholders[dowsCount]})+1] <= lastDate
+          date + (array[${this.placeholders['dayShifts']}]::integer[])[(n % ${this.placeholders['dowsCount']})+1] <= ${this.lastDate}::date
       ),
       lessons_inserted AS (
         INSERT
@@ -241,7 +255,7 @@ class GetQueryBuilder extends LessonsQueryBuilder {
       ) {
         this.refined.date = date
       } else {
-        throw new Error('Invalid "date" format')
+        throw new AppError(400, 'Invalid "date" format')
       }
     }
   }
@@ -249,10 +263,10 @@ class GetQueryBuilder extends LessonsQueryBuilder {
   refineStatus(urlQuery) {
     if (hasValue(urlQuery, 'status')) {
       const status = parseInt(urlQuery.status)
-      if (urlQuery.status === 0 || urlQuery.status === 1) {
-        this.refined.status = urlQuery.status
+      if (status === 0 || status === 1) {
+        this.refined.status = status
       } else {
-        throw new Error('Invalid "status" format')
+        throw new AppError(400, 'Invalid "status" format')
       }
     }
   }
@@ -267,7 +281,7 @@ class GetQueryBuilder extends LessonsQueryBuilder {
       }
 
       if (teacherIds.some(item => !isInteger(item, 1))) {
-        throw new Error('"teacherIds" must be positive integers array')
+        throw new AppError(400, '"teacherIds" must be positive integers array')
       }
 
       this.refined.teacherIds = uniqueSort(teacherIds)
@@ -285,7 +299,7 @@ class GetQueryBuilder extends LessonsQueryBuilder {
       ) {
         this.refined.studentsCount = studentsCount
       } else {
-        throw new Error('Invalid "studentsCount" format')
+        throw new AppError(400, 'Invalid "studentsCount" format')
       }
     }
   }
@@ -298,7 +312,7 @@ class GetQueryBuilder extends LessonsQueryBuilder {
           this.refined.page = page
         }
       } else {
-        throw new Error('"page" must be positive integer')
+        throw new AppError(400, '"page" must be positive integer')
       }
     }
 
@@ -307,10 +321,10 @@ class GetQueryBuilder extends LessonsQueryBuilder {
       if (isInteger(lessonsPerPage, 1)) {
         this.refined.lessonsPerPage = lessonsPerPage
       } else {
-        throw new Error('"lessonsPerPage" must be positive integer')
+        throw new AppError(400, '"lessonsPerPage" must be positive integer')
       }
     } else {
-      this.refined.lessonsPerPage = 5
+      this.refined.lessonsPerPage = parseInt(process.env.LESSONS_PER_PAGE ?? 5)
     }
   }
 
@@ -318,6 +332,7 @@ class GetQueryBuilder extends LessonsQueryBuilder {
    * @param {Record<string, string>} urlQuery
    */
   constructor(urlQuery) {
+    super()
     if (urlQuery) {
       this.refineDate(urlQuery)
       this.refineStatus(urlQuery)
@@ -380,7 +395,8 @@ class GetQueryBuilder extends LessonsQueryBuilder {
 
   get offset() {
     if (hasValue(this.refined, 'page')) {
-      return `OFFSET ${(this.scalar('page') - 1) * this.refined.lessonsPerPage}`
+      this.refined.offset = this.refined.lessonsPerPage * (this.refined.page - 1)
+      return `OFFSET ${this.scalar('offset')}`
     }
 
     return ''
@@ -390,10 +406,10 @@ class GetQueryBuilder extends LessonsQueryBuilder {
     return dedent`
       SELECT
         LL.id, LL.date, LL.title, LL.status,
-        "visitCount",
+        "visitCount"::int4,
         students,
         coalesce(
-          jsonb_agg(json_build_object('id', T.id, 'name', T.name)) filter (where T.id is not null),
+          jsonb_agg(json_build_object('id', T.id, 'name', T.name) order by T.id) filter (where T.id is not null),
           jsonb_build_array()
         ) AS teachers
       FROM (
@@ -404,7 +420,7 @@ class GetQueryBuilder extends LessonsQueryBuilder {
           L.status AS status,
           count(S.id) filter(WHERE LS.visit) AS "visitCount",
           coalesce(
-            jsonb_agg(json_build_object('id', S.id, 'name', S.name, 'visit', LS.visit)) filter (where S.id is NOT NULL),
+            jsonb_agg(json_build_object('id', S.id, 'name', S.name, 'visit', LS.visit) order by S.id) filter (where S.id is NOT NULL),
             jsonb_build_array()
           ) AS students
         FROM
@@ -444,11 +460,11 @@ class Service {
     console.log(query)
     console.log(params)
 
-    return (await this.client.query(query, params)).rows
+    return (await this.client.query({ text: query, rowMode: 'array' }, params)).rows.flat()
   }
 
-  async getLessons(filter) {
-    const builder = new GetQueryBuilder(body)
+  async getLessons(urlQuery) {
+    const builder = new GetQueryBuilder(urlQuery)
     const query = builder.build()
     const params = builder.queryParams
 
