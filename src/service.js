@@ -79,11 +79,13 @@ class AddQueryBuilder extends LessonsQueryBuilder {
 
     const dayShifts = Array(days.length)
     let adjustedFirstDate = null
+    let firstDowIndex = null
     for (let i = 0; i < days.length; i++) {
       if (!adjustedFirstDate) {
         if (firstDow <= days[i]) {
           firstDate.setUTCDate(firstDate.getUTCDate() + days[i] - firstDow)
           adjustedFirstDate = formatDate(firstDate)
+          firstDowIndex = i
         }
       }
 
@@ -96,10 +98,13 @@ class AddQueryBuilder extends LessonsQueryBuilder {
     if (!adjustedFirstDate) {
       firstDate.setUTCDate(firstDate.getUTCDate() + 7 - (firstDow - days[0]))
       adjustedFirstDate = formatDate(firstDate)
+      firstDowIndex = 0
     }
 
     this.refined.adjustedFirstDate = adjustedFirstDate
     this.refined.dayShifts = dayShifts
+      .slice(firstDowIndex)
+      .concat(dayShifts.slice(0, firstDowIndex))
     this.refined.dowsCount = dayShifts.length
   }
 

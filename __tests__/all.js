@@ -177,4 +177,37 @@ describe('add and get lessons', () => {
     const response = await R.post('/lessons').send(body)
     expect(response.statusCode).toBe(400)
   })
+
+  test('Non-periodic day interval', async () => {
+    const firstDate = '2023-10-05'
+    const body = {
+      teacherIds: [2, 4],
+      title: 'Lorem ipsium',
+      days: [1, 3, 5],
+      firstDate,
+      lessonsCount: 10,
+    }
+
+    console.log(JSON.stringify(body))
+    const response = await R.post('/lessons').send(body)
+    expect(response.statusCode).toBe(200)
+    expect(response.body).toBeArrayOfSize(10)
+
+    const urlQuery = qs.stringify({
+      date: firstDate + ',2024-10-05',
+      teacherIds: '4,2',
+      studentsCount: '0',
+      lessonsPerPage: 500,
+    })
+    console.log(urlQuery)
+    const response2 = await R.get(`/?${urlQuery}`)
+    expect(response2.statusCode).toBe(200)
+    expect(response2.body.slice(0, 5)).toMatchObject([
+      { date: '2023-10-06' },
+      { date: '2023-10-09' },
+      { date: '2023-10-11' },
+      { date: '2023-10-13' },
+      { date: '2023-10-16' },
+    ])
+  })
 })
